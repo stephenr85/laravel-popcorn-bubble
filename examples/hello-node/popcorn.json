@@ -1,0 +1,20 @@
+{
+    "name": "hello-node",
+    "runtime": "node@22",
+    "entrypoint": "index.js",
+    "files": ["index.js"],
+    "io": "stdio",
+    "description": "The reference Node transform: reads {input, grant} on stdin, returns JSON on stdout.",
+    "input": {
+        "type": "object",
+        "properties": { "name": { "type": "string" } }
+    },
+    "output": {
+        "type": "object",
+        "properties": { "greeting": { "type": "string" } }
+    },
+    "requests": {
+        "net": "none",
+        "limits": { "wallMs": 5000, "memBytes": 134217728 }
+    }
+}

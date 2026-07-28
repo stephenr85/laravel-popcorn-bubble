@@ -1,0 +1,60 @@
+{
+    "name": "rushing/laravel-popcorn-bubble",
+    "description": "A bubblewrap (bwrap) sandbox substrate for popcorn Runners — the first walkable route: OS-namespace isolation for semi-trusted transforms, Node and Python out-of-the-box behind a LanguageProvider seam.",
+    "keywords": ["laravel", "popcorn", "sandbox", "bubblewrap", "bwrap", "runner", "isolation"],
+    "license": "proprietary",
+    "authors": [
+        {
+            "name": "Stephen Rushing",
+            "email": "stephenr85@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/contracts": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "rushing/laravel-popcorn": "*"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^9.0",
+        "pestphp/pest": "^3.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../laravel-popcorn",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Rushing\\Popcorn\\Bubble\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rushing\\Popcorn\\Bubble\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Rushing\\Popcorn\\Bubble\\BubbleServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "scripts": {
+        "pint": "@php -d memory_limit=512M vendor/bin/pint"
+    }
+}
