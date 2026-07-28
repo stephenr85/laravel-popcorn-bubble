@@ -9,6 +9,7 @@ use Rushing\Popcorn\Bubble\Contracts\LanguageProvider;
 use Rushing\Popcorn\Bubble\Support\BwrapCommand;
 use Rushing\Popcorn\Bubble\Support\LimitLadder;
 use Rushing\Popcorn\Contracts\Runner;
+use Rushing\Popcorn\Runner\Concerns\HandlesRunnerIo;
 use Rushing\Popcorn\Runner\Grant;
 use Rushing\Popcorn\Runner\GrantAxis;
 use Rushing\Popcorn\Runner\Io;
@@ -31,9 +32,7 @@ use Rushing\Popcorn\Runner\Result;
  */
 class BwrapRunner implements Runner
 {
-    private const OUTPUT_HARD_CAP_BYTES = 262144; // 256 KiB
-
-    private const STDERR_TAIL_BYTES = 16384; // 16 KiB
+    use HandlesRunnerIo;
 
     /** @var array<string, LanguageProvider> keyed by runtimeId */
     private array $providers = [];
@@ -166,7 +165,10 @@ class BwrapRunner implements Runner
 
         $pending = Process::input($payload)->timeout($timeoutSeconds);
 
-        // In the unsandboxed degrade the env allowlist is applied host-side (bwrap --setenv does it otherwise).
+        // In the unsandboxed degrade the env allowlist is applied host-side. NOTE: unlike the real
+        // sandbox (which --clearenv's then --setenv's the allowlist), Process::env() sets these over
+        // an inherited parent environment — so the dev degrade is deliberately *less* isolated than
+        // prod. That is acceptable only because it is off-Linux dev-only + Result.sandboxed is false.
         if (! $sandboxed && $grant->env !== []) {
             $pending = $pending->env($grant->env);
         }
@@ -294,30 +296,5 @@ class BwrapRunner implements Runner
         $file = $outDir.'/output.json';
 
         return is_file($file) ? (string) file_get_contents($file) : null;
-    }
-
-    private function isJsonObject(string $candidate): bool
-    {
-        try {
-            return is_array(json_decode($candidate, true, flags: JSON_THROW_ON_ERROR));
-        } catch (JsonException) {
-            return false;
-        }
-    }
-
-    private function tail(string $value, int $bytes): string
-    {
-        return strlen($value) > $bytes ? substr($value, -$bytes) : $value;
-    }
-
-    private function binaryOnPath(string $binary): bool
-    {
-        if (str_contains($binary, '/')) {
-            return is_executable($binary);
-        }
-
-        $which = @shell_exec('command -v '.escapeshellarg($binary).' 2>/dev/null');
-
-        return is_string($which) && trim($which) !== '';
     }
 }
