@@ -1,5 +1,8 @@
 {
     "rules": {
+        "fully_qualified_strict_types": {
+            "phpdoc_tags": []
+        },
         "ordered_imports": true,
         "constant_case": true,
         "trailing_comma_in_multiline": true,
