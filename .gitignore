@@ -4,3 +4,4 @@ composer.lock
 .phpunit.cache/
 /.idea/
 CLAUDE.md
+composer.local.json
