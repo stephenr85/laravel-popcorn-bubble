@@ -33,6 +33,10 @@
         {
             "type": "git",
             "url": "https://github.com/stephenr85/laravel-popcorn.git"
+        },
+        {
+            "type": "git",
+            "url": "https://github.com/stephenr85/php-popcorn.git"
         }
     ],
     "autoload": {
