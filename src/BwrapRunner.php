@@ -2,13 +2,26 @@
 
 namespace Rushing\Popcorn\Bubble;
 
+use Illuminate\Container\Container;
 use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\Process;
 use JsonException;
 use Rushing\Popcorn\Bubble\Contracts\LanguageProvider;
+use Rushing\Popcorn\Bubble\Providers\NodeProvider;
+use Rushing\Popcorn\Bubble\Providers\PythonProvider;
 use Rushing\Popcorn\Bubble\Support\BwrapCommand;
 use Rushing\Popcorn\Bubble\Support\LimitLadder;
 use Rushing\Popcorn\Contracts\Runner;
+use Rushing\Popcorn\Registries\Authorizer;
+use Rushing\Popcorn\Registries\BasicRegistry;
+use Rushing\Popcorn\Registries\Gated;
+use Rushing\Popcorn\Registries\IsRegistry;
+use Rushing\Popcorn\Registries\Key;
+use Rushing\Popcorn\Registries\OnDuplicate;
+use Rushing\Popcorn\Registries\Optionality;
+use Rushing\Popcorn\Registries\Registry;
+use Rushing\Popcorn\Registries\RegistryArity;
+use Rushing\Popcorn\Registries\RegistryKey;
 use Rushing\Popcorn\Runner\Concerns\HandlesRunnerIo;
 use Rushing\Popcorn\Runner\Grant;
 use Rushing\Popcorn\Runner\GrantAxis;
@@ -30,47 +43,184 @@ use Rushing\Popcorn\Runner\Result;
  * *whole pipeline minus the `bwrap` prefix* run on a Mac for dev, always stamping `Result.sandboxed:
  * false` so audit/meter/UI can never mistake a dev run for a real isolated one.
  */
-class BwrapRunner implements Runner
+#[IsRegistry(
+    root: 'popcorn.bubble.providers',
+    of: 'language providers for the bwrap substrate, one per `Manifest.runtime` id',
+    arity: RegistryArity::PickOne,
+    entryType: LanguageProvider::class,
+    onDuplicate: OnDuplicate::Supersede,
+    optionality: Optionality::Optional,
+    note: 'A later registration of the same runtime id replaces the shipped one — a host pointing '
+        .'`node` at an nvm/Herd interpreter is the seam, not an accident. Version-suffixed runtimes '
+        .'(`node@22`) resolve on the base segment: `@` is not a legal key character, so a suffix '
+        .'never reaches the keyspace.',
+)]
+class BwrapRunner implements Gated, Registry, Runner
 {
     use HandlesRunnerIo;
 
-    /** @var array<string, LanguageProvider> keyed by runtimeId */
-    private array $providers = [];
+    /** @var array<string, mixed> the defaults every config read falls back through */
+    private const CONFIG_DEFAULTS = [
+        'bwrap_binary' => 'bwrap',
+        'guest_root' => '/pkg',
+        'uid' => 65534,
+        'gid' => 65534,
+        'allow_unsandboxed' => false,
+        'default_wall_seconds' => 60,
+    ];
+
+    private BasicRegistry $entries;
+
+    /** @var iterable<LanguageProvider>|null the constructor seed, consumed on the first read */
+    private ?iterable $seed;
+
+    private bool $seeded = false;
 
     /**
-     * @param  iterable<LanguageProvider>  $providers
-     * @param  array<string, mixed>  $config
+     * Both `$providers` and `$config` default to **null meaning read-through**, not to an empty seed.
+     *
+     * That is registry-kernel ticket 38's archetype-c rule and it is load-bearing here: describing this
+     * registry into the index FORCES the singleton to construct at boot, so a constructor that
+     * snapshotted `config('popcorn-bubble')` — or that had already consumed its provider list — would
+     * freeze both ahead of every host registrant and every later `config()->set()`. An explicit `[]`
+     * still means "seed nothing"; only `null` means "the package's own two reference providers".
+     *
+     * @param  iterable<LanguageProvider>|null  $providers
+     * @param  array<string, mixed>|null  $config
      */
     public function __construct(
-        iterable $providers = [],
-        private array $config = [],
+        ?iterable $providers = null,
+        private ?array $config = null,
         private ?string $osFamily = null,
     ) {
-        foreach ($providers as $provider) {
-            $this->register($provider);
-        }
-
+        $this->entries = BasicRegistry::for($this);
+        $this->seed = $providers;
         $this->osFamily ??= PHP_OS_FAMILY;
-        $this->config += [
-            'bwrap_binary' => 'bwrap',
-            'guest_root' => '/pkg',
-            'uid' => 65534,
-            'gid' => 65534,
-            'allow_unsandboxed' => false,
-            'default_wall_seconds' => 60,
-        ];
     }
 
-    public function register(LanguageProvider $provider): static
+    /**
+     * Register a provider under its own runtime id.
+     *
+     * The parameter is WIDENED from {@see Registry::register()} rather than shadowing it —
+     * contravariance, so the one-argument self-keying door every historical caller uses keeps working.
+     */
+    public function register(RegistryKey|string|LanguageProvider $key, mixed $entry = null, ?string $by = null, ?string $ability = null): static
     {
-        $this->providers[$provider->runtimeId()] = $provider;
+        $this->ensureSeeded();
+
+        if ($key instanceof LanguageProvider) {
+            $entry = $key;
+            $key = $key->runtimeId();
+        }
+
+        $this->entries->register($key, $entry, $by, $ability);
 
         return $this;
     }
 
+    public function has(RegistryKey|string $key): bool
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->has($key);
+    }
+
+    public function resolve(RegistryKey|string $key): mixed
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->resolve($key);
+    }
+
+    public function tryResolve(RegistryKey|string $key): mixed
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->tryResolve($key);
+    }
+
+    public function matches(RegistryKey|string $key): array
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->matches($key);
+    }
+
+    public function keys(): array
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->keys();
+    }
+
+    public function unfiltered(): Registry
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->unfiltered();
+    }
+
+    public function authorizeWith(?Authorizer $authorizer): static
+    {
+        $this->entries->authorizeWith($authorizer);
+
+        return $this;
+    }
+
+    /**
+     * The registered runtime ids, as callers spelled them — {@see keys()} with the declared root
+     * stripped back off, because keys go relative in and absolute out.
+     *
+     * @return string[]
+     */
+    public function runtimeIds(): array
+    {
+        $this->ensureSeeded();
+
+        return $this->entries->relativeKeys();
+    }
+
+    /** Seed the constructor's providers once, on the first read or write — never in the constructor. */
+    private function ensureSeeded(): void
+    {
+        if ($this->seeded) {
+            return;
+        }
+
+        // Set BEFORE the loop: register() re-enters here, and the seed must win the race with itself.
+        $this->seeded = true;
+
+        $seed = $this->seed ?? [new NodeProvider, new PythonProvider];
+        $this->seed = null;
+
+        foreach ($seed as $provider) {
+            $this->register($provider);
+        }
+    }
+
+    /**
+     * The effective config, read through to the host on every access unless one was injected.
+     *
+     * @return array<string, mixed>
+     */
+    private function config(): array
+    {
+        return ($this->config ?? $this->hostConfig()) + self::CONFIG_DEFAULTS;
+    }
+
+    /** @return array<string, mixed> */
+    private function hostConfig(): array
+    {
+        $container = Container::getInstance();
+
+        return $container->bound('config')
+            ? (array) $container->make('config')->get('popcorn-bubble', [])
+            : [];
+    }
+
     public function probe(): bool
     {
-        return $this->osFamily === 'Linux' && $this->binaryOnPath((string) $this->config['bwrap_binary']);
+        return $this->osFamily === 'Linux' && $this->binaryOnPath((string) $this->config()['bwrap_binary']);
     }
 
     public function run(Manifest $manifest, Grant $grant, array $input): Result
@@ -86,12 +236,12 @@ class BwrapRunner implements Runner
         }
 
         if ($this->osFamily !== 'Linux') {
-            return $this->config['allow_unsandboxed']
+            return $this->config()['allow_unsandboxed']
                 ? $this->runUnsandboxed($provider, $manifest, $grant, $input)
                 : Result::substrateUnavailable('popcorn-bubble: bwrap unavailable off-Linux; set POPCORN_BUBBLE_ALLOW_UNSANDBOXED=1 for the dev degrade.');
         }
 
-        if (! $this->binaryOnPath((string) $this->config['bwrap_binary'])) {
+        if (! $this->binaryOnPath((string) $this->config()['bwrap_binary'])) {
             return Result::substrateUnavailable('popcorn-bubble: bwrap binary not found on PATH.');
         }
 
@@ -161,7 +311,7 @@ class BwrapRunner implements Runner
 
         $timeoutSeconds = $grant->limits->wallMs !== null
             ? (int) max(1, ceil($grant->limits->wallMs / 1000))
-            : (int) $this->config['default_wall_seconds'];
+            : (int) $this->config()['default_wall_seconds'];
 
         $pending = Process::input($payload)->timeout($timeoutSeconds);
 
@@ -258,20 +408,29 @@ class BwrapRunner implements Runner
         return $this->command()->forRun($grant, $manifest, $provider, $outDir);
     }
 
+    /**
+     * The provider for a `Manifest.runtime` — the port's own vocabulary, sugar over
+     * {@see tryResolve()}. A version suffix (`node@22`) is stripped first; `@` is not a legal key
+     * character, so the full spelling is only ever tried when it happens to parse as one.
+     */
     public function providerFor(string $runtime): ?LanguageProvider
     {
         $base = strtok($runtime, '@') ?: $runtime;
 
-        return $this->providers[$base] ?? $this->providers[$runtime] ?? null;
+        /** @var LanguageProvider|null */
+        return $this->tryResolve($base)
+            ?? ($runtime !== $base && Key::tryParse($runtime) !== null ? $this->tryResolve($runtime) : null);
     }
 
     private function command(): BwrapCommand
     {
+        $config = $this->config();
+
         return new BwrapCommand(
-            bwrapBinary: (string) $this->config['bwrap_binary'],
-            guestRoot: (string) $this->config['guest_root'],
-            uid: (int) $this->config['uid'],
-            gid: (int) $this->config['gid'],
+            bwrapBinary: (string) $config['bwrap_binary'],
+            guestRoot: (string) $config['guest_root'],
+            uid: (int) $config['uid'],
+            gid: (int) $config['gid'],
         );
     }
 
