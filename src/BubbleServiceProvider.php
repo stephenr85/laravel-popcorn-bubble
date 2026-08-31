@@ -3,7 +3,6 @@
 namespace Rushing\Popcorn\Bubble;
 
 use Illuminate\Support\ServiceProvider;
-use Rushing\Popcorn\Registries\RegistryIndex;
 
 class BubbleServiceProvider extends ServiceProvider
 {
@@ -19,12 +18,6 @@ class BubbleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        // Declaring and indexing are two acts; this is the second one, and until it runs the index
-        // holds nothing for `popcorn.bubble.providers`.
-        $this->app->make(RegistryIndex::class)->describe(
-            $this->app->make(BwrapRunner::class),
-            by: self::class,
-        );
 
         if ($this->app->runningInConsole()) {
             $this->publishes([
