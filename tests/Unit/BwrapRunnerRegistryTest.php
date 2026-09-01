@@ -74,11 +74,13 @@ it('lets a later registration of the same runtime supersede the shipped provider
 
     $runner->register('node', new FakeRubyProvider);
 
-    // Superseding APPENDS rather than assigning in place, so `node` moves to the end of registration
-    // order where the old PHP-array assignment held its slot. Nothing reads this registry in order —
-    // `providerFor()` is a PickOne lookup — so the move is observable only through `runtimeIds()`.
+    // Superseding overrides IN PLACE: the new record inherits the displaced one's `position` and is
+    // spliced back into the vacated slot, so `node` keeps the slot a PHP-array assignment gave it and
+    // `runtimeIds()` is unmoved. Ruled by registry-kernel 62, which reversed the append this
+    // assertion originally recorded — a host swapping one shipped default must not re-sort a list it
+    // never touched.
     expect($runner->providerFor('node'))->toBeInstanceOf(FakeRubyProvider::class)
-        ->and($runner->runtimeIds())->toBe(['python', 'node']);
+        ->and($runner->runtimeIds())->toBe(['node', 'python']);
 });
 
 it('reads config through to the host rather than snapshotting it at construction', function () {
