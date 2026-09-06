@@ -20,7 +20,6 @@ use Rushing\Popcorn\Registries\Key;
 use Rushing\Popcorn\Registries\OnDuplicate;
 use Rushing\Popcorn\Registries\Optionality;
 use Rushing\Popcorn\Registries\Registry;
-use Rushing\Popcorn\Registries\RegistryArity;
 use Rushing\Popcorn\Registries\RegistryKey;
 use Rushing\Popcorn\Runner\Concerns\HandlesRunnerIo;
 use Rushing\Popcorn\Runner\Grant;
@@ -45,15 +44,10 @@ use Rushing\Popcorn\Runner\Result;
  */
 #[IsRegistry(
     root: 'popcorn.bubble.providers',
-    of: 'language providers for the bwrap substrate, one per `Manifest.runtime` id',
-    arity: RegistryArity::PickOne,
     entryType: LanguageProvider::class,
     onDuplicate: OnDuplicate::Supersede,
     optionality: Optionality::Optional,
-    note: 'A later registration of the same runtime id replaces the shipped one — a host pointing '
-        .'`node` at an nvm/Herd interpreter is the seam, not an accident. Version-suffixed runtimes '
-        .'(`node@22`) resolve on the base segment: `@` is not a legal key character, so a suffix '
-        .'never reaches the keyspace.',
+    description: 'language providers for the bwrap substrate, one per `Manifest.runtime` id. A later registration of the same runtime id replaces the shipped one — a host pointing `node` at an nvm/Herd interpreter is the seam, not an accident. Version-suffixed runtimes (`node@22`) resolve on the base segment: `@` is not a legal key character, so a suffix never reaches the keyspace.',
 )]
 class BwrapRunner implements Gated, Registry, Runner
 {
