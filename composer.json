@@ -1,6 +1,6 @@
 {
     "name": "rushing/laravel-popcorn-bubble",
-    "description": "A bubblewrap (bwrap) sandbox substrate for popcorn Runners — the first walkable route: OS-namespace isolation for semi-trusted transforms, Node and Python out-of-the-box behind a LanguageProvider seam.",
+    "description": "A bubblewrap (bwrap) sandbox substrate for popcorn Runners \u2014 the first walkable route: OS-namespace isolation for semi-trusted transforms, Node and Python out-of-the-box behind a LanguageProvider seam.",
     "keywords": [
         "laravel",
         "popcorn",
@@ -30,6 +30,20 @@
         "wikimedia/composer-merge-plugin": "^2.1"
     },
     "repositories": [
+        {
+            "type": "path",
+            "url": "../laravel-popcorn",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "../php-popcorn",
+            "options": {
+                "symlink": true
+            }
+        },
         {
             "type": "git",
             "url": "https://github.com/stephenr85/laravel-popcorn.git"
