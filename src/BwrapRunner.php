@@ -17,8 +17,8 @@ use Rushing\Popcorn\Registries\BasicRegistry;
 use Rushing\Popcorn\Registries\Gated;
 use Rushing\Popcorn\Registries\IsRegistry;
 use Rushing\Popcorn\Registries\Key;
-use Rushing\Popcorn\Registries\OnDuplicate;
-use Rushing\Popcorn\Registries\Optionality;
+use Rushing\Popcorn\Registries\OnKeyDuplicate;
+use Rushing\Popcorn\Registries\PopulationRequirement;
 use Rushing\Popcorn\Registries\Registry;
 use Rushing\Popcorn\Registries\RegistryKey;
 use Rushing\Popcorn\Runner\Concerns\HandlesRunnerIo;
@@ -45,8 +45,8 @@ use Rushing\Popcorn\Runner\Result;
 #[IsRegistry(
     root: 'popcorn.bubble.providers',
     entryType: LanguageProvider::class,
-    onDuplicate: OnDuplicate::Supersede,
-    optionality: Optionality::Optional,
+    onKeyDuplicate: OnKeyDuplicate::Supersede,
+    populationRequirement: PopulationRequirement::Optional,
     description: 'language providers for the bwrap substrate, one per `Manifest.runtime` id. A later registration of the same runtime id replaces the shipped one — a host pointing `node` at an nvm/Herd interpreter is the seam, not an accident. Version-suffixed runtimes (`node@22`) resolve on the base segment: `@` is not a legal key character, so a suffix never reaches the keyspace.',
 )]
 class BwrapRunner implements Gated, Registry, Runner
