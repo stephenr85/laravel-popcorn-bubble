@@ -1,0 +1,75 @@
+---
+title: Bubblewrap language providers
+segment: popcorn.bubble.providers
+nav_order: 100
+excerpt: The interpreters (node, python) the bubblewrap sandbox runner can launch, one per Manifest.runtime id.
+---
+
+# Bubblewrap language providers
+
+`popcorn.bubble.providers` holds the **language providers** the bubblewrap (`bwrap`) sandbox can
+launch. `BwrapRunner` is one runner for every language: when it runs a popcorn `Manifest`, it looks
+up the manifest's `runtime` id here, and the matching `LanguageProvider` supplies the interpreter
+command line and any extra directories that interpreter needs bound into the sandbox. The runner
+supplies everything else: the deny-by-default sandbox floor, the grant's flags and the resource limits.
+
+{/* registry-facts:start — generated from the #[IsRegistry] declaration by `splicewire:beam:docs:registries:scaffold`. Rerun the command; do not edit between these markers. */}
+
+- **Root:** `popcorn.bubble.providers`
+- **Entries:** `Rushing\Popcorn\Bubble\Contracts\LanguageProvider`
+- **Duplicate keys:** Supersede — a later registration under a taken key replaces the earlier entry, in its place
+- **Population:** Optional — an empty registry is normal
+- **Order:** `100` (display order, ascending)
+- **Declared by:** `Rushing\Popcorn\Bubble\BwrapRunner`
+
+{/* registry-facts:end */}
+
+## What ships
+
+Two providers, registered the first time the registry is read:
+
+- **`node`** (`NodeProvider`) runs `node /pkg/<entrypoint>`.
+- **`python`** (`PythonProvider`) runs `python3 -I /pkg/<entrypoint>` (isolated mode, so host site directories are ignored), and binds the C-extension wheel
+  directories that live outside `/usr`.
+
+An interpreter installed under `/usr` needs no extra binds, because the sandbox floor already binds
+`/usr` read-only.
+
+These ids are separate from the wasm runner's (`javy`, `python-wasi`): choosing a runtime id also
+chooses the sandbox it runs in.
+
+## Adding or replacing a provider
+
+Implement `LanguageProvider` (`runtimeId()`, `argv()`, `extraBinds()`, `probe()`) and register it. It
+keys itself by `runtimeId()`. The most common use is pointing a shipped runtime at a different
+interpreter, such as a Node installed by nvm outside `/usr`:
+
+```php
+use Rushing\Popcorn\Bubble\BwrapRunner;
+
+$this->app->make(BwrapRunner::class)->register(new NvmNodeProvider('/opt/node/bin/node'));
+```
+
+Because its `runtimeId()` is `node`, it replaces the shipped provider, and its `extraBinds()` must
+bind the interpreter's directory, since that directory isn't under `/usr`.
+
+## Lookups and misses
+
+`providerFor($id)` strips a version suffix before looking up, so a manifest asking for `node@22`
+finds `node`. A manifest naming a runtime nobody registered doesn't throw: the run returns a
+substrate-unavailable `Result`, as it does when `bwrap` isn't installed or the provider's `probe()`
+reports the interpreter missing. `runtimeIds()` lists what's registered.
+
+## Duplicates
+
+The policy is **supersede**: registering a provider under a taken id replaces it. That's the
+intended way to swap an interpreter, not an accident.
+
+## Going deeper
+
+The source is
+[`BwrapRunner`](https://github.com/stephenr85/laravel-popcorn-bubble/blob/main/src/BwrapRunner.php);
+the contract is
+[`LanguageProvider`](https://github.com/stephenr85/laravel-popcorn-bubble/blob/main/src/Contracts/LanguageProvider.php).
+The [laravel-popcorn-bubble README](https://github.com/stephenr85/laravel-popcorn-bubble#readme)
+covers the sandbox floor, transports, resource limits and the macOS development fallback.
