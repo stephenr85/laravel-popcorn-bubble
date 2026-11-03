@@ -93,3 +93,11 @@ gate**; Lima/Colima is a documented opt-in for faithful local iteration.
 composer require rushing/laravel-popcorn-bubble
 php artisan vendor:publish --tag=popcorn-bubble-config
 ```
+
+## Registries
+
+This package declares one registry:
+
+- [`popcorn.bubble.providers`](docs/registries/popcorn.bubble.providers.mdx): the language providers
+  `BwrapRunner` can launch, one per `Manifest.runtime` id. `NodeProvider` and `PythonProvider` ship
+  here; a third-party runtime registers its own.
