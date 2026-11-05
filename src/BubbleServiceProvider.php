@@ -3,10 +3,16 @@
 namespace Rushing\Popcorn\Bubble;
 
 use Illuminate\Support\ServiceProvider;
+use Rushing\Popcorn\Registries\Registrant;
 
 class BubbleServiceProvider extends ServiceProvider
 {
     public function register(): void
+    {
+        Registrant::scoped('rushing/laravel-popcorn-bubble', $this->registerScoped(...));
+    }
+
+    private function registerScoped(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/popcorn-bubble.php', 'popcorn-bubble');
 
@@ -17,6 +23,11 @@ class BubbleServiceProvider extends ServiceProvider
     }
 
     public function boot(): void
+    {
+        Registrant::scoped('rushing/laravel-popcorn-bubble', $this->bootScoped(...));
+    }
+
+    private function bootScoped(): void
     {
 
         if ($this->app->runningInConsole()) {
