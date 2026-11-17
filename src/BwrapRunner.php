@@ -427,9 +427,17 @@ class BwrapRunner implements Gated, Registry, Runner, SessionRunner
         }
 
         if ($this->osFamily !== 'Linux') {
-            return $this->config()['allow_unsandboxed']
-                ? $this->openUnsandboxed($provider, $manifest, $grant)
-                : $this->refuse('popcorn-bubble: bwrap unavailable off-Linux; set POPCORN_BUBBLE_ALLOW_UNSANDBOXED=1 for the dev degrade.', $grant);
+            if (! $this->config()['allow_unsandboxed']) {
+                return $this->refuse('popcorn-bubble: bwrap unavailable off-Linux; set POPCORN_BUBBLE_ALLOW_UNSANDBOXED=1 for the dev degrade.', $grant);
+            }
+
+            // The degrade has no limit mechanism at all. An effective cpu/mem limit it would silently ignore is
+            // refused, never reflected back as if it held (amend, Codex review ff28ff40 finding 3).
+            if ($grant->limits->cpuMs !== null || $grant->limits->memBytes !== null) {
+                return $this->refuse('popcorn-bubble: the unsandboxed dev degrade cannot enforce cpu/mem limits; a session refuses rather than run without them.', $grant);
+            }
+
+            return $this->openUnsandboxed($provider, $manifest, $grant);
         }
 
         $bwrap = $this->resolveBinary((string) $this->config()['bwrap_binary']);
@@ -452,15 +460,47 @@ class BwrapRunner implements Gated, Registry, Runner, SessionRunner
             return $this->refuse('popcorn-bubble: required cpu/mem limits cannot be enforced on this host (no systemd-run/prlimit).', $grant);
         }
 
-        // The guest environment is the Grant's alone: the floor's --clearenv wipes whatever bwrap
-        // itself was started with, and --setenv adds back only the granted keys. bwrap's own
-        // environment carries PATH and nothing else so the limit prefix can find its binaries.
+        // An OPTIONAL cpu/mem limit with no mechanism on this host: the one-shot run may degrade, but a session
+        // would then report an effective Grant whose limits never applied. Refuse instead of reflecting a
+        // limit that does not hold (amend, Codex review ff28ff40 finding 3; Grant: silent drop is banned).
+        if ($plan['unenforcedAxes'] !== []) {
+            return $this->refuse('popcorn-bubble: optional cpu/mem limits cannot be enforced on this host (no systemd-run/prlimit); a session refuses rather than run without them.', $grant);
+        }
+
+        $prefix = $plan['prefix'];
+
+        if ($prefix !== []) {
+            $limiter = $this->resolveBinary($prefix[0]);
+
+            if ($limiter === null) {
+                return $this->refuse("popcorn-bubble: the limit mechanism `{$prefix[0]}` is not on PATH.", $grant);
+            }
+
+            $prefix[0] = $limiter;
+        }
+
+        // Credentials never ride argv (amend, Codex review ff28ff40 finding 1). The guest environment is the
+        // Grant's EXACTLY, delivered as the launched process's own environment: a session's floor has no
+        // --clearenv and its argv no --setenv, so bwrap (and systemd-run --scope / prlimit before it, which both
+        // keep the caller's environment) hands the guest exactly this environment and nothing else. Every binary
+        // in the argv is an absolute path, so no PATH is needed in it.
         return ProcessSession::start(
-            [...$plan['prefix'], ...$this->sessionArgv($manifest, $grant, $bwrap)],
-            ['PATH' => (string) getenv('PATH')],
+            [...$prefix, ...$this->sessionArgv($manifest, $grant, $bwrap)],
+            $grant->env,
             sandboxed: true,
             grant: $grant,
         );
+    }
+
+    /**
+     * The exact environment a session's launched process (and so its guest) receives: the Grant's env, nothing
+     * else. Paired with {@see buildSessionArgv()}, which carries no environment value.
+     *
+     * @return array<string, string>
+     */
+    public function sessionEnvironment(Grant $grant): array
+    {
+        return $grant->env;
     }
 
     /**

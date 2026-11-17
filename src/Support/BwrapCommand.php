@@ -44,8 +44,15 @@ class BwrapCommand
     }
 
     /**
-     * The argv for a long-lived session (php-popcorn ADR-0003): exactly a stdio run's floor, Grant
+     * The argv for a long-lived session (php-popcorn ADR-0003): a stdio run's floor, path and net Grant
      * flags and bundle bind, never an `/out` bind — a session's value travels over its stdout.
+     *
+     * It carries NO environment value (amend, Codex review ff28ff40 finding 1): a granted credential (a
+     * BYO-LLM-key) placed after `--setenv` would be readable in the host's process list. The session's
+     * floor therefore omits `--clearenv`, and the caller launches bwrap with EXACTLY the Grant's env as
+     * its own environment, which bwrap passes to the guest unchanged. The guest sees the same exact env
+     * the one-shot floor's `--clearenv` + `--setenv` gives it; only the delivery channel differs. The
+     * one-shot {@see forRun()} is unchanged.
      *
      * @return list<string>
      */
@@ -53,8 +60,8 @@ class BwrapCommand
     {
         return [
             $this->bwrapBinary,
-            ...$this->floor(),
-            ...$this->grantFlags($grant),
+            ...array_values(array_filter($this->floor(), static fn (string $flag): bool => $flag !== '--clearenv')),
+            ...$this->grantFlags($grant, withEnv: false),
             ...$this->bundleBind($manifest),
             ...$provider->extraBinds(),
             '--',
@@ -101,7 +108,7 @@ class BwrapCommand
      *
      * @return list<string>
      */
-    private function grantFlags(Grant $grant): array
+    private function grantFlags(Grant $grant, bool $withEnv = true): array
     {
         $flags = [];
 
@@ -127,7 +134,7 @@ class BwrapCommand
             }
         }
 
-        foreach ($grant->env as $key => $value) {
+        foreach ($withEnv ? $grant->env : [] as $key => $value) {
             $flags[] = '--setenv';
             $flags[] = (string) $key;
             $flags[] = (string) $value;

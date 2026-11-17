@@ -87,9 +87,11 @@ function linuxBwrap(): ?string
 it('builds a session argv on the deny-by-default floor with no /out bind', function () {
     $argv = sessionRunner()->buildSessionArgv(probeManifest(), Grant::none());
 
+    // A session's floor has no --clearenv: its guest environment is delivered as bwrap's own exact environment
+    // (amend, Codex ff28ff40 finding 1), so no environment value ever needs to ride the argv.
     expect($argv[0])->toBe('bwrap')
         ->and($argv)->toContain('--unshare-all')
-        ->and($argv)->toContain('--clearenv')
+        ->and($argv)->not->toContain('--clearenv')
         ->and($argv)->toContain('--die-with-parent')
         ->and($argv)->not->toContain('--share-net')
         ->and($argv)->not->toContain('--setenv')
@@ -97,18 +99,70 @@ it('builds a session argv on the deny-by-default floor with no /out bind', funct
         ->and(array_slice($argv, array_search('--', $argv, true) + 1))->toBe([PHP_BINARY, '-n', '/pkg/probe.php']);
 });
 
-it('turns only what the grant declares into binds, egress and environment', function () {
-    $argv = sessionRunner()->buildSessionArgv(probeManifest(), new Grant(
-        pathsRo: ['/srv/models'],
-        net: Net::Scoped,
-        env: ['LLM_KEY' => 'k'],
-    ));
+it('turns only what the grant declares into binds and egress, and puts NO environment value in the argv', function () {
+    $grant = new Grant(pathsRo: ['/srv/models'], net: Net::Scoped, env: ['LLM_KEY' => 'tenant-secret-value']);
+    $runner = sessionRunner();
+    $argv = $runner->buildSessionArgv(probeManifest(), $grant);
     $joined = implode(' ', $argv);
 
     expect($joined)->toContain('--ro-bind /srv/models /srv/models')
         ->and($joined)->toContain('--share-net')
-        ->and($joined)->toContain('--setenv LLM_KEY k')
-        ->and(substr_count($joined, '--setenv'))->toBe(1);
+        ->and($argv)->not->toContain('--setenv')
+        ->and($joined)->not->toContain('tenant-secret-value')
+        ->and($joined)->not->toContain('LLM_KEY')
+        ->and($runner->sessionEnvironment($grant))->toBe(['LLM_KEY' => 'tenant-secret-value']);
+});
+
+it('leaves the one-shot run argv unchanged (its --clearenv + --setenv shape is outside this ticket)', function () {
+    $argv = sessionRunner()->buildSandboxArgv(probeManifest(), new Grant(env: ['A' => 'b']));
+
+    expect($argv)->toContain('--clearenv')
+        ->and(implode(' ', $argv))->toContain('--setenv A b');
+});
+
+// --- LAUNCHED ARGV + DELIVERED ENV through a fake bwrap (any OS; delivery evidence, NOT enforcement) -------
+
+/** Install fake-bwrap.php as an executable with a space-free `#!<php> -n` shebang (Herd's PHP path has a space). */
+function fakeBwrap(): string
+{
+    $dir = sys_get_temp_dir().'/popcorn-fake-bwrap-'.bin2hex(random_bytes(5));
+    mkdir($dir, 0700);
+    symlink(PHP_BINARY, "{$dir}/php");
+    $fake = "{$dir}/bwrap";
+    file_put_contents($fake, "#!{$dir}/php -n\n".file_get_contents(__DIR__.'/../Fixtures/session/fake-bwrap.php'));
+    chmod($fake, 0755);
+    $GLOBALS['fakeBwrapDirs'][] = $dir;
+
+    return $fake;
+}
+
+afterEach(function () {
+    foreach ($GLOBALS['fakeBwrapDirs'] ?? [] as $dir) {
+        foreach (['bwrap', 'bwrap.log', 'php'] as $f) {
+            @unlink("{$dir}/{$f}");
+        }
+        @rmdir($dir);
+    }
+    $GLOBALS['fakeBwrapDirs'] = [];
+});
+
+it('launches the Linux session with the credential in the ENVIRONMENT only: never in the launched argv', function () {
+    $fake = fakeBwrap();
+    $session = sessionRunner(os: 'Linux', config: ['bwrap_binary' => $fake])
+        ->open(probeManifest(), new Grant(env: ['LLM_KEY' => 'tenant-secret-value']));
+
+    expect($session->refusal())->toBeNull()->and($session->sandboxed())->toBeTrue();
+
+    $guestEnv = ask($session, 'env')['env'] ?? null;
+    $session->close();
+    $launched = json_decode((string) file_get_contents("{$fake}.log"), true);
+
+    // What the host's process list shows for the launched process: no value, no key, no --setenv.
+    expect($launched['argv'])->not->toContain('--setenv')
+        ->and(implode("\0", $launched['argv']))->not->toContain('tenant-secret-value')
+        // What it was handed as its environment, and what the guest therefore sees: exactly the Grant's env.
+        ->and($launched['env'])->toBe(['LLM_KEY' => 'tenant-secret-value'])
+        ->and($guestEnv)->toBe(['LLM_KEY' => 'tenant-secret-value']);
 });
 
 // --- refusals (any OS; nothing is launched) ----------------------------------------------------
@@ -126,6 +180,56 @@ it('refuses, rather than throws, when the session cannot be honoured', function 
     'no bundle root' => fn () => [Manifest::fromArray(['name' => 'p', 'runtime' => 'php', 'entrypoint' => 'p.php']), Grant::none(), 'no bundleRoot'],
     'files transport' => fn () => [probeManifest(['io' => 'files']), Grant::none(), 'speaks stdio'],
     'a wall-time limit' => fn () => [probeManifest(), new Grant(limits: new Limits(wallMs: 1000)), 'wall-time'],
+]);
+
+// --- limits are never silently dropped (amend, Codex ff28ff40 finding 3) -----------------------------------------
+
+/** Run $fn with PATH pointing at an empty directory, so neither systemd-run nor prlimit can be found. */
+function withoutLimitTools(callable $fn): mixed
+{
+    $empty = sys_get_temp_dir().'/popcorn-nopath-'.bin2hex(random_bytes(5));
+    mkdir($empty, 0700);
+    $old = getenv('PATH');
+    putenv("PATH={$empty}");
+
+    try {
+        return $fn();
+    } finally {
+        putenv($old === false ? 'PATH' : "PATH={$old}");
+        @rmdir($empty);
+    }
+}
+
+it('refuses an OPTIONAL cpu/mem limit it has no mechanism for, instead of reflecting it as enforced', function () {
+    $fake = fakeBwrap();
+    $grant = new Grant(limits: new Limits(memBytes: 268435456));
+
+    $session = withoutLimitTools(fn () => sessionRunner(os: 'Linux', config: ['bwrap_binary' => $fake])->open(probeManifest(), $grant));
+
+    expect($session)->toBeInstanceOf(RefusedSession::class)
+        ->and($session->refusal()?->error)->toContain('optional cpu/mem limits cannot be enforced')
+        ->and(is_file("{$fake}.log"))->toBeFalse(); // nothing was launched
+});
+
+it('still refuses a REQUIRED cpu/mem limit it has no mechanism for', function () {
+    $fake = fakeBwrap();
+    $manifest = probeManifest(['requests' => ['limits' => ['cpuMs' => 1000], 'required' => ['limits']]]);
+
+    $session = withoutLimitTools(fn () => sessionRunner(os: 'Linux', config: ['bwrap_binary' => $fake])
+        ->open($manifest, new Grant(limits: new Limits(cpuMs: 1000))));
+
+    expect($session)->toBeInstanceOf(RefusedSession::class)
+        ->and($session->refusal()?->error)->toContain('required cpu/mem limits cannot be enforced');
+});
+
+it('refuses cpu/mem limits in the unsandboxed degrade, which has no limit mechanism at all', function (Limits $limits) {
+    $session = sessionRunner(os: 'Darwin', config: ['allow_unsandboxed' => true])->open(probeManifest(), new Grant(limits: $limits));
+
+    expect($session)->toBeInstanceOf(RefusedSession::class)
+        ->and($session->refusal()?->error)->toContain('cannot enforce cpu/mem limits');
+})->with([
+    'memory' => fn () => new Limits(memBytes: 268435456),
+    'cpu' => fn () => new Limits(cpuMs: 1000),
 ]);
 
 it('fails closed off-Linux by default: SubstrateUnavailable, distinct from a grant denial, nothing started', function () {
