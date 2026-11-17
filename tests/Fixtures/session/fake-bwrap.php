@@ -6,8 +6,13 @@
  * The test installs it as an executable with a `#!<php> -n` shebang. It records the exact argv and environment IT was
  * launched with (what the host's process list and /proc would show for bwrap) to <its own path>.log. It then emulates
  * only the `--ro-bind <bundle> /pkg` + `--chdir /pkg` mapping, so the guest path resolves, and runs the guest command
- * after `--` with its OWN environment passed on unchanged, as real bwrap does when its floor has no --clearenv.
- * PHP adds nothing to the environment, so the guest sees exactly what this process was given.
+ * after `--`, passing on its OWN runtime view of the environment (`getenv()`), as real bwrap passes its environment
+ * when its floor has no --clearenv.
+ *
+ * That view is not always exactly what this process was given. On macOS a PHP process has been observed to see one name
+ * it was not handed (kernel ADR-0003 amendment, root 44be5842; RuntimeEnvAdditions), and this fake then FORWARDS that
+ * name to the guest. So on Darwin, what the guest sees through this fake is the delivered env plus at most that one
+ * listed name. It is delivery evidence modulo that name, not proof of exact delivery, and not real bwrap.
  */
 $args = array_slice($argv, 1);
 file_put_contents(__FILE__.'.log', json_encode(['argv' => $args, 'env' => getenv()]));

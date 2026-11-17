@@ -174,9 +174,11 @@ it('launches the Linux session with the credential in the ENVIRONMENT only: neve
     // What the host's process list shows for the launched process: no value, no key, no --setenv.
     expect($launched['argv'])->not->toContain('--setenv')
         ->and(implode("\0", $launched['argv']))->not->toContain('tenant-secret-value')
-        // What it was handed as its environment, and what the guest therefore sees: exactly the Grant's env. Both are
-        // read by a PHP process's own getenv(), so the closed observed runtime additions are removed first (root
-        // 44be5842); any other extra name still fails.
+        // What the fake reports it was handed, and what the guest then sees: the Grant's env. Both are read by a PHP
+        // process's own getenv(), so the ONE root-selected name for PHP on Darwin is removed first (root 44be5842);
+        // any other extra name still fails. On Darwin this is therefore delivery evidence modulo that one name, and
+        // the fake forwards its own runtime view to the guest: it is NOT proof of exact real-bwrap delivery, and
+        // not Linux enforcement (the Linux cases below are the only enforcement evidence).
         ->and(phpChildEnv($launched['env'], ['LLM_KEY' => 'tenant-secret-value']))->toBe(['LLM_KEY' => 'tenant-secret-value'])
         ->and(phpChildEnv($guestEnv, ['LLM_KEY' => 'tenant-secret-value']))->toBe(['LLM_KEY' => 'tenant-secret-value']);
 });
