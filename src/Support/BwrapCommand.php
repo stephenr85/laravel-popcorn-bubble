@@ -43,6 +43,25 @@ class BwrapCommand
         ];
     }
 
+    /**
+     * The argv for a long-lived session (php-popcorn ADR-0003): exactly a stdio run's floor, Grant
+     * flags and bundle bind, never an `/out` bind — a session's value travels over its stdout.
+     *
+     * @return list<string>
+     */
+    public function forSession(Grant $grant, Manifest $manifest, LanguageProvider $provider): array
+    {
+        return [
+            $this->bwrapBinary,
+            ...$this->floor(),
+            ...$this->grantFlags($grant),
+            ...$this->bundleBind($manifest),
+            ...$provider->extraBinds(),
+            '--',
+            ...$provider->argv($this->guestEntrypoint($manifest)),
+        ];
+    }
+
     /** The guest-absolute path the interpreter runs — the entrypoint rooted at `/pkg`. */
     public function guestEntrypoint(Manifest $manifest): string
     {

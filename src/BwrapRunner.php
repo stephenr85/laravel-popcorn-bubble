@@ -12,6 +12,7 @@ use Rushing\Popcorn\Bubble\Providers\PythonProvider;
 use Rushing\Popcorn\Bubble\Support\BwrapCommand;
 use Rushing\Popcorn\Bubble\Support\LimitLadder;
 use Rushing\Popcorn\Contracts\Runner;
+use Rushing\Popcorn\Contracts\SessionRunner;
 use Rushing\Popcorn\Registries\Authorizer;
 use Rushing\Popcorn\Registries\BasicRegistry;
 use Rushing\Popcorn\Registries\Gated;
@@ -27,7 +28,10 @@ use Rushing\Popcorn\Runner\GrantAxis;
 use Rushing\Popcorn\Runner\Io;
 use Rushing\Popcorn\Runner\Manifest;
 use Rushing\Popcorn\Runner\Outcome;
+use Rushing\Popcorn\Runner\ProcessSession;
+use Rushing\Popcorn\Runner\RefusedSession;
 use Rushing\Popcorn\Runner\Result;
+use Rushing\Popcorn\Runner\Session;
 
 /**
  * The bubblewrap {@see Runner} — the first walkable route (popcorn-runner ticket 07). ONE Runner for
@@ -41,6 +45,11 @@ use Rushing\Popcorn\Runner\Result;
  * there; the built-in **config-gated unsandboxed degrade** (off by default, fail-closed) lets the
  * *whole pipeline minus the `bwrap` prefix* run on a Mac for dev, always stamping `Result.sandboxed:
  * false` so audit/meter/UI can never mistake a dev run for a real isolated one.
+ *
+ * It is also the first {@see SessionRunner} (popcorn-runner-rehome ticket 03, php-popcorn ADR-0003):
+ * {@see open()} launches a long-lived two-way process behind the SAME floor, Grant flags and bundle
+ * bind as {@see run()}, with the same off-Linux rules — fail-closed by default, the explicitly
+ * selected degrade stamping `sandboxed: false`.
  */
 #[IsRegistry(
     root: 'popcorn.bubble.providers',
@@ -49,7 +58,7 @@ use Rushing\Popcorn\Runner\Result;
     populationRequirement: PopulationRequirement::Optional,
     description: 'language providers for the bwrap substrate, one per `Manifest.runtime` id. A later registration of the same runtime id replaces the shipped one — a host pointing `node` at an nvm/Herd interpreter is the seam, not an accident. Version-suffixed runtimes (`node@22`) resolve on the base segment: `@` is not a legal key character, so a suffix never reaches the keyspace.',
 )]
-class BwrapRunner implements Gated, Registry, Runner
+class BwrapRunner implements Gated, Registry, Runner, SessionRunner
 {
     use HandlesRunnerIo;
 
@@ -388,6 +397,145 @@ class BwrapRunner implements Gated, Registry, Runner
             exitCode: $proc->exitCode(),
             sandboxed: $sandboxed,
         );
+    }
+
+    /**
+     * Open a long-lived, two-way session (php-popcorn ADR-0003). The refusals mirror {@see run()}:
+     * no provider, no bundle root, off-Linux without the explicit degrade, no bwrap, no runtime, or
+     * cpu/mem limits that cannot be enforced. Two refusals are session-only, because a session cannot
+     * honour them and silent-drop is banned: files transport (a session speaks stdio) and a wall-time
+     * limit (a run's wall clock has no meaning for a process the host keeps warm).
+     */
+    public function open(Manifest $manifest, Grant $grant): Session
+    {
+        $provider = $this->providerFor($manifest->runtime);
+
+        if ($provider === null) {
+            return $this->refuse("popcorn-bubble: no LanguageProvider for runtime `{$manifest->runtime}`.", $grant);
+        }
+
+        if ($manifest->bundleRoot === null) {
+            return $this->refuse('popcorn-bubble: manifest has no bundleRoot to bind at /pkg.', $grant);
+        }
+
+        if ($manifest->io !== Io::Stdio) {
+            return $this->refuse('popcorn-bubble: a session speaks stdio; files transport cannot open one.', $grant);
+        }
+
+        if ($grant->limits->wallMs !== null) {
+            return $this->refuse('popcorn-bubble: a session cannot honour a wall-time limit; resolve the grant without one.', $grant);
+        }
+
+        if ($this->osFamily !== 'Linux') {
+            return $this->config()['allow_unsandboxed']
+                ? $this->openUnsandboxed($provider, $manifest, $grant)
+                : $this->refuse('popcorn-bubble: bwrap unavailable off-Linux; set POPCORN_BUBBLE_ALLOW_UNSANDBOXED=1 for the dev degrade.', $grant);
+        }
+
+        $bwrap = $this->resolveBinary((string) $this->config()['bwrap_binary']);
+
+        if ($bwrap === null) {
+            return $this->refuse('popcorn-bubble: bwrap binary not found on PATH.', $grant);
+        }
+
+        if (! $provider->probe()) {
+            return $this->refuse("popcorn-bubble: runtime `{$manifest->runtime}` not present on host.", $grant);
+        }
+
+        $ladder = new LimitLadder(
+            systemdRunAvailable: $this->binaryOnPath('systemd-run'),
+            prlimitAvailable: $this->binaryOnPath('prlimit'),
+        );
+        $plan = $ladder->plan($grant->limits, $manifest->requests?->isRequired(GrantAxis::Limits) ?? false);
+
+        if ($plan['failClosed']) {
+            return $this->refuse('popcorn-bubble: required cpu/mem limits cannot be enforced on this host (no systemd-run/prlimit).', $grant);
+        }
+
+        // The guest environment is the Grant's alone: the floor's --clearenv wipes whatever bwrap
+        // itself was started with, and --setenv adds back only the granted keys. bwrap's own
+        // environment carries PATH and nothing else so the limit prefix can find its binaries.
+        return ProcessSession::start(
+            [...$plan['prefix'], ...$this->sessionArgv($manifest, $grant, $bwrap)],
+            ['PATH' => (string) getenv('PATH')],
+            sandboxed: true,
+            grant: $grant,
+        );
+    }
+
+    /**
+     * The bwrap argv a session *would* launch (no execution) — the same floor, Grant flags and bundle
+     * bind as a run, with no `/out` bind. Empty when the runtime has no provider.
+     *
+     * @return list<string>
+     */
+    public function buildSessionArgv(Manifest $manifest, Grant $grant): array
+    {
+        return $this->sessionArgv($manifest, $grant, (string) $this->config()['bwrap_binary']);
+    }
+
+    /** @return list<string> */
+    private function sessionArgv(Manifest $manifest, Grant $grant, string $bwrapBinary): array
+    {
+        $provider = $this->providerFor($manifest->runtime);
+
+        if ($provider === null) {
+            return [];
+        }
+
+        $config = $this->config();
+
+        return (new BwrapCommand(
+            bwrapBinary: $bwrapBinary,
+            guestRoot: (string) $config['guest_root'],
+            uid: (int) $config['uid'],
+            gid: (int) $config['gid'],
+        ))->forSession($grant, $manifest, $provider);
+    }
+
+    /**
+     * The off-Linux dev degrade for a session: the provider's exact argv, no bwrap prefix, cwd at the
+     * bundle root, `sandboxed: false`. Unlike the one-shot degrade, the environment is EXACTLY the
+     * Grant's (no inherited host env), so the env axis stays enforced host-side even here. Paths and
+     * net are NOT enforced in this degrade; that is what `sandboxed: false` says.
+     */
+    private function openUnsandboxed(LanguageProvider $provider, Manifest $manifest, Grant $grant): Session
+    {
+        $argv = $provider->argv($manifest->entrypointPath());
+        $interpreter = $this->resolveBinary($argv[0] ?? '');
+
+        if ($interpreter === null) {
+            return $this->refuse("popcorn-bubble: runtime `{$manifest->runtime}` not present on host.", $grant);
+        }
+
+        $argv[0] = $interpreter;
+
+        return ProcessSession::start($argv, $grant->env, sandboxed: false, grant: $grant, cwd: $manifest->bundleRoot);
+    }
+
+    private function refuse(string $error, Grant $grant): Session
+    {
+        return new RefusedSession(Result::substrateUnavailable($error), $grant);
+    }
+
+    /**
+     * An absolute path for a binary, so a child started with an exact (often PATH-less) environment
+     * can still be executed. Null when it cannot be found.
+     */
+    private function resolveBinary(string $binary): ?string
+    {
+        if ($binary === '') {
+            return null;
+        }
+
+        if (str_contains($binary, '/')) {
+            return is_executable($binary) ? $binary : null;
+        }
+
+        $found = @shell_exec('command -v '.escapeshellarg($binary).' 2>/dev/null');
+        $found = is_string($found) ? trim($found) : '';
+
+        return $found !== '' && str_starts_with($found, '/') ? $found : null;
     }
 
     /** The bwrap argv a run *would* assemble — the release-gate / debugging read path (no execution). */
