@@ -8,6 +8,7 @@ use Rushing\Popcorn\Runner\Manifest;
 use Rushing\Popcorn\Runner\Net;
 use Rushing\Popcorn\Runner\Outcome;
 use Rushing\Popcorn\Runner\RefusedSession;
+use Rushing\Popcorn\Runner\RuntimeEnvAdditions;
 use Rushing\Popcorn\Runner\Session;
 
 /**
@@ -69,6 +70,19 @@ function ask(Session $session, string $command): array
     expect($session->send($command))->toBeTrue();
 
     return json_decode((string) $session->receive(), true) ?? [];
+}
+
+/**
+ * An environment a PHP process reported with its own getenv(), without only the closed, OBSERVED post-exec runtime
+ * additions for PHP on the platform these tests actually run on (PHP_OS_FAMILY, never a simulated `os:`). Root
+ * 44be5842; kernel ADR-0003. The caller then requires exact equality, so any other extra name fails. A non-array (the
+ * child answered nothing) is returned as is, so the equality fails visibly.
+ *
+ * @param  array<string, string>  $granted
+ */
+function phpChildEnv(mixed $observed, array $granted): mixed
+{
+    return is_array($observed) ? RuntimeEnvAdditions::withoutObserved($observed, $granted, 'php') : $observed;
 }
 
 function linuxBwrap(): ?string
@@ -160,9 +174,11 @@ it('launches the Linux session with the credential in the ENVIRONMENT only: neve
     // What the host's process list shows for the launched process: no value, no key, no --setenv.
     expect($launched['argv'])->not->toContain('--setenv')
         ->and(implode("\0", $launched['argv']))->not->toContain('tenant-secret-value')
-        // What it was handed as its environment, and what the guest therefore sees: exactly the Grant's env.
-        ->and($launched['env'])->toBe(['LLM_KEY' => 'tenant-secret-value'])
-        ->and($guestEnv)->toBe(['LLM_KEY' => 'tenant-secret-value']);
+        // What it was handed as its environment, and what the guest therefore sees: exactly the Grant's env. Both are
+        // read by a PHP process's own getenv(), so the closed observed runtime additions are removed first (root
+        // 44be5842); any other extra name still fails.
+        ->and(phpChildEnv($launched['env'], ['LLM_KEY' => 'tenant-secret-value']))->toBe(['LLM_KEY' => 'tenant-secret-value'])
+        ->and(phpChildEnv($guestEnv, ['LLM_KEY' => 'tenant-secret-value']))->toBe(['LLM_KEY' => 'tenant-secret-value']);
 });
 
 // --- refusals (any OS; nothing is launched) ----------------------------------------------------
@@ -281,7 +297,7 @@ it('gives the degrade child exactly the granted environment, never the host one'
         putenv('POPCORN_BUBBLE_HOST_SECRET');
     }
 
-    expect($env)->toBe(['LLM_KEY' => 'granted']);
+    expect(phpChildEnv($env, ['LLM_KEY' => 'granted']))->toBe(['LLM_KEY' => 'granted']);
 });
 
 // --- LINUX (the only enforcement evidence; SKIPPED = NOT MEASURED) --------------------------------
@@ -319,8 +335,8 @@ it('under bwrap, the child sees only the granted environment', function () {
         putenv('POPCORN_BUBBLE_HOST_SECRET');
     }
 
-    expect($env)->toHaveKey('LLM_KEY')
-        ->and($env['LLM_KEY'])->toBe('granted')
+    // Exact equality (root 44be5842: exact everywhere). On Linux the closed list removes nothing.
+    expect(phpChildEnv($env, ['LLM_KEY' => 'granted']))->toBe(['LLM_KEY' => 'granted'])
         ->and($env)->not->toHaveKey('POPCORN_BUBBLE_HOST_SECRET')
         ->and($env)->not->toHaveKey('PATH');
 })->skip(fn () => linuxBwrap() === null, 'NOT MEASURED: needs Linux with bwrap on PATH');

@@ -482,7 +482,9 @@ class BwrapRunner implements Gated, Registry, Runner, SessionRunner
         // Credentials never ride argv (amend, Codex review ff28ff40 finding 1). The guest environment is the
         // Grant's EXACTLY, delivered as the launched process's own environment: a session's floor has no
         // --clearenv and its argv no --setenv, so bwrap (and systemd-run --scope / prlimit before it, which both
-        // keep the caller's environment) hands the guest exactly this environment and nothing else. Every binary
+        // keep the caller's environment) hands the guest exactly this environment and nothing else. That is the
+        // delivery. What a guest's own runtime adds after it starts is not delivered: checks accept only the closed,
+        // observed list in the kernel's RuntimeEnvAdditions (ADR-0003 amendment, root 44be5842). Every binary
         // in the argv is an absolute path, so no PATH is needed in it.
         return ProcessSession::start(
             [...$prefix, ...$this->sessionArgv($manifest, $grant, $bwrap)],
