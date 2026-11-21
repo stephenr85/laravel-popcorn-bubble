@@ -31,20 +31,6 @@
     },
     "repositories": [
         {
-            "type": "path",
-            "url": "../laravel-popcorn",
-            "options": {
-                "symlink": true
-            }
-        },
-        {
-            "type": "path",
-            "url": "../php-popcorn",
-            "options": {
-                "symlink": true
-            }
-        },
-        {
             "type": "git",
             "url": "https://github.com/stephenr85/laravel-popcorn.git"
         },
